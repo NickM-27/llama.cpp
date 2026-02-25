@@ -1,0 +1,51 @@
+name: Sync with upstream
+
+on:
+  workflow_dispatch: # allows manual triggering
+  schedule:
+    # Check for upstream changes every hour
+    - cron: '0 * * * *'
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/ggml-org/llama.cpp.git || true
+
+      - name: Fetch upstream
+        run: |
+          git fetch upstream
+
+      - name: Sync with upstream master
+        run: |
+          # Check if we're on master branch
+          if [[ "${{ github.ref }}" == "refs/heads/master" ]]; then
+            # Try to sync with upstream master
+            git checkout master
+            git pull upstream master --rebase || git pull upstream master --no-rebase
+            git push origin master --force-with-lease
+            echo "Successfully synced with upstream master"
+          else
+            echo "Not on master branch, skipping sync"
+          fi
+
+      - name: Create sync log
+        run: |
+          echo "Sync completed at $(date)" > sync-log.txt
+          git log -1 --format="%H %s" upstream/master >> sync-log.txt
