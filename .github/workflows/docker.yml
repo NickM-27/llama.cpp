@@ -119,7 +119,7 @@ jobs:
           swap-storage: true
 
       - name: Build and push Full Docker image (tagged + versioned)
-        if: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && matrix.config.full == true }}
+        if: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_run') && matrix.config.full == true }}
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -144,7 +144,7 @@ jobs:
           cache-to: type=registry,ref=${{ steps.tag.outputs.cache_output_tags }},mode=max
 
       - name: Build and push Light Docker image (tagged + versioned)
-        if: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && matrix.config.light == true }}
+        if: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_run') && matrix.config.light == true }}
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -169,7 +169,7 @@ jobs:
           cache-to: type=registry,ref=${{ steps.tag.outputs.cache_output_tags }},mode=max
 
       - name: Build and push Server Docker image (tagged + versioned)
-        if: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && matrix.config.server == true }}
+        if: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_run') && matrix.config.server == true }}
         uses: docker/build-push-action@v6
         with:
           context: .
