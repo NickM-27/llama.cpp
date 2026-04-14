@@ -2,11 +2,10 @@ ARG UBUNTU_VERSION=26.04
 
 FROM ubuntu:$UBUNTU_VERSION AS build
 
-# Install build tools
-RUN apt update && apt install -y git build-essential cmake wget xz-utils
-
-# Install SSL and Vulkan SDK dependencies
-RUN apt install -y libssl-dev curl \
+# Install build tools and SSL/Vulkan SDK dependencies
+RUN apt update && apt install -y \
+    git build-essential cmake wget xz-utils \
+    libssl-dev curl \
     libxcb-xinput0 libxcb-xinerama0 libxcb-cursor-dev libvulkan-dev glslc spirv-headers
 
 # Build it
