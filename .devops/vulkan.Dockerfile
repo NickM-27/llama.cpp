@@ -5,11 +5,10 @@ ARG APP_REVISION=N/A
 
 FROM ubuntu:$UBUNTU_VERSION AS build
 
-# Install build tools
-RUN apt update && apt install -y git build-essential cmake wget xz-utils
-
-# Install SSL and Vulkan SDK dependencies
-RUN apt install -y libssl-dev curl \
+# Install build tools and SSL/Vulkan SDK dependencies
+RUN apt update && apt install -y \
+    git build-essential cmake ccache wget xz-utils \
+    libssl-dev curl \
     libxcb-xinput0 libxcb-xinerama0 libxcb-cursor-dev libvulkan-dev glslc spirv-headers
 
 # Build it
@@ -17,7 +16,11 @@ WORKDIR /app
 
 COPY . .
 
-RUN cmake -B build -DGGML_NATIVE=OFF -DGGML_VULKAN=ON -DLLAMA_BUILD_TESTS=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON && \
+RUN --mount=type=cache,target=/root/.ccache \
+    cmake -B build -DGGML_NATIVE=OFF -DGGML_VULKAN=ON -DLLAMA_BUILD_TESTS=OFF \
+        -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON \
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache && \
     cmake --build build --config Release -j$(nproc)
 
 RUN mkdir -p /app/lib && \
