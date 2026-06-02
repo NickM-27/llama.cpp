@@ -3,22 +3,43 @@ ARG BUILD_DATE=N/A
 ARG APP_VERSION=N/A
 ARG APP_REVISION=N/A
 
+# Empty default seed; CI overrides with --build-context ccache_seed=<dir>
+FROM scratch AS ccache_seed
+
 FROM ubuntu:$UBUNTU_VERSION AS build
 
-# Install build tools
-RUN apt update && apt install -y git build-essential cmake wget xz-utils
-
-# Install SSL and Vulkan SDK dependencies
-RUN apt install -y libssl-dev curl \
+# Install build tools and SSL/Vulkan SDK dependencies
+RUN apt update && apt install -y \
+    git build-essential cmake ccache wget xz-utils \
+    libssl-dev curl \
     libxcb-xinput0 libxcb-xinerama0 libxcb-cursor-dev libvulkan-dev glslc spirv-headers
 
 # Build it
 WORKDIR /app
 
+# Restore ccache state from build context (empty on first run)
+COPY --from=ccache_seed / /root/.ccache/
+
 COPY . .
 
-RUN cmake -B build -DGGML_NATIVE=OFF -DGGML_VULKAN=ON -DLLAMA_BUILD_TESTS=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON && \
-    cmake --build build --config Release -j$(nproc)
+# Pre-seed the Web UI so the build does not depend on the (flaky, non-fatal) HF
+# download in scripts/ui-assets.cmake. This populates tools/ui/dist, which cmake
+# consumes as priority-1 prebuilt assets, so no UI fetch happens during the build.
+# Pull "latest" since these builds run ahead of the upstream release; -f + exit 1
+# make this fail loudly instead of silently shipping a server with no embedded UI.
+RUN mkdir -p tools/ui/dist && \
+    base="https://huggingface.co/buckets/ggml-org/llama-ui/resolve/latest" && \
+    for f in index.html bundle.js bundle.css loading.html; do \
+        curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+            "$base/$f?download=true" -o "tools/ui/dist/$f" || exit 1; \
+    done
+
+RUN cmake -B build -DGGML_NATIVE=OFF -DGGML_VULKAN=ON -DLLAMA_BUILD_TESTS=OFF \
+        -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON \
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache && \
+    cmake --build build --config Release -j$(nproc) && \
+    ccache -s
 
 RUN mkdir -p /app/lib && \
     find build -name "*.so*" -exec cp -P {} /app/lib \;
@@ -109,3 +130,7 @@ WORKDIR /app
 HEALTHCHECK CMD [ "curl", "-f", "http://localhost:8080/health" ]
 
 ENTRYPOINT [ "/app/llama-server" ]
+
+### ccache export — CI extracts /root/.ccache to host via type=local
+FROM scratch AS ccache-export
+COPY --from=build /root/.ccache /
