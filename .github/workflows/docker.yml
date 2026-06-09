@@ -19,6 +19,10 @@ on:
   schedule:
     # Rebuild daily rather than on every push because it is expensive
     - cron: '12 4 * * *'
+  workflow_run:
+    workflows: ["Sync with upstream"]
+    types:
+      - completed
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
@@ -77,19 +81,8 @@ jobs:
           # Keep all build targets in one place and derive merge targets from it.
           cat > build-matrix.json <<'JSON'
           [
-            { "tag": "cpu", "dockerfile": ".devops/cpu.Dockerfile", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": false, "runs_on": "ubuntu-24.04" },
-            { "tag": "cpu", "dockerfile": ".devops/cpu.Dockerfile", "platforms": "linux/arm64", "full": true, "light": true, "server": true, "free_disk_space": false, "runs_on": "ubuntu-24.04-arm" },
-            { "tag": "cpu", "dockerfile": ".devops/s390x.Dockerfile", "platforms": "linux/s390x", "full": true, "light": true, "server": true, "free_disk_space": false, "runs_on": "ubuntu-24.04-s390x" },
-            { "tag": "cuda cuda12", "dockerfile": ".devops/cuda.Dockerfile", "cuda_version": "12.8.1", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04" },
-            { "tag": "cuda cuda12", "dockerfile": ".devops/cuda.Dockerfile", "cuda_version": "12.8.1", "platforms": "linux/arm64", "full": true, "light": true, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04-arm" },
-            { "tag": "cuda13", "dockerfile": ".devops/cuda.Dockerfile", "cuda_version": "13.3.0", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04" },
-            { "tag": "cuda13", "dockerfile": ".devops/cuda.Dockerfile", "cuda_version": "13.3.0", "platforms": "linux/arm64", "full": true, "light": true, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04-arm" },
-            { "tag": "musa", "dockerfile": ".devops/musa.Dockerfile", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04" },
-            { "tag": "intel", "dockerfile": ".devops/intel.Dockerfile", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04" },
-            { "tag": "vulkan", "dockerfile": ".devops/vulkan.Dockerfile", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": false, "runs_on": "ubuntu-24.04" },
-            { "tag": "vulkan", "dockerfile": ".devops/vulkan.Dockerfile", "platforms": "linux/arm64", "full": true, "light": true, "server": true, "free_disk_space": false, "runs_on": "ubuntu-24.04-arm" },
-            { "tag": "rocm", "dockerfile": ".devops/rocm.Dockerfile", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04" },
-            { "tag": "openvino", "dockerfile": ".devops/openvino.Dockerfile", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": false, "runs_on": "ubuntu-24.04" }
+            { "tag": "vulkan", "dockerfile": ".devops/vulkan.Dockerfile", "platforms": "linux/amd64", "full": false, "light": false, "server": true, "free_disk_space": false, "runs_on": "ubuntu-24.04", "ccache": true },
+            { "tag": "cuda",   "dockerfile": ".devops/cuda.Dockerfile",   "platforms": "linux/amd64", "full": false, "light": false, "server": true, "free_disk_space": true,  "runs_on": "ubuntu-24.04", "ccache": true }
           ]
           JSON
 
@@ -221,6 +214,39 @@ jobs:
           docker-images: true
           swap-storage: true
 
+      - name: Add swap space
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Vulkan shader generation forks many concurrent glslc/spirv-opt jobs
+          # and exhausts the runner's ~16 GB RAM (fork() ENOMEM), which silently
+          # drops shaders from the build. Add swap on the large /mnt disk so the
+          # spike spills instead of failing. fallocate is instant; fall back to
+          # dd if the filesystem rejects it.
+          SWAPFILE=/mnt/docker-build-swap
+          if swapon --show=NAME --noheadings | grep -qx "$SWAPFILE"; then
+            echo "Extra swap already active"; swapon --show; exit 0
+          fi
+          sudo fallocate -l 16G "$SWAPFILE" || sudo dd if=/dev/zero of="$SWAPFILE" bs=1M count=16384
+          sudo chmod 600 "$SWAPFILE"
+          sudo mkswap "$SWAPFILE"
+          sudo swapon "$SWAPFILE"
+          echo "Memory/swap after adding swapfile:"; free -h; swapon --show
+
+      - name: Prepare ccache directory
+        if: ${{ matrix.config.ccache == true }}
+        shell: bash
+        run: mkdir -p ${{ runner.temp }}/ccache-${{ matrix.config.tag }}
+
+      - name: Restore ccache
+        if: ${{ matrix.config.ccache == true }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/ccache-${{ matrix.config.tag }}
+          key: docker-ccache-${{ matrix.config.tag }}-${{ github.run_id }}
+          restore-keys: |
+            docker-ccache-${{ matrix.config.tag }}-
+
       - name: Build and push Full Docker image by digest
         id: build_full
         if: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && matrix.config.full == true }}
@@ -297,7 +323,7 @@ jobs:
 
       - name: Build and push Server Docker image by digest
         id: build_server
-        if: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && matrix.config.server == true }}
+        if: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_run') && matrix.config.server == true }}
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
         with:
           context: .
@@ -306,6 +332,7 @@ jobs:
           file: ${{ matrix.config.dockerfile }}
           target: server
           provenance: false
+          build-contexts: ${{ matrix.config.ccache && format('ccache_seed={0}/ccache-{1}', runner.temp, matrix.config.tag) || '' }}
           build-args: |
             BUILD_DATE=${{ steps.build_date.outputs.date }}
             APP_VERSION=${{ needs.create_tag.outputs.source_tag }}
@@ -331,6 +358,35 @@ jobs:
           # using registry cache (no storage limit)
           cache-from: type=registry,ref=${{ steps.meta.outputs.cache_output_tag }}
           cache-to: type=registry,ref=${{ steps.meta.outputs.cache_output_tag }},mode=max
+
+      - name: Extract updated ccache
+        if: ${{ matrix.config.ccache == true && steps.build_server.conclusion == 'success' }}
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
+        with:
+          context: .
+          platforms: ${{ matrix.config.platforms }}
+          file: ${{ matrix.config.dockerfile }}
+          target: ccache-export
+          outputs: type=local,dest=${{ runner.temp }}/ccache-${{ matrix.config.tag }}-new
+          build-contexts: ccache_seed=${{ runner.temp }}/ccache-${{ matrix.config.tag }}
+          build-args: |
+            ${{ matrix.config.ubuntu_version && format('UBUNTU_VERSION={0}', matrix.config.ubuntu_version) || '' }}
+            ${{ matrix.config.cuda_version && format('CUDA_VERSION={0}', matrix.config.cuda_version) || '' }}
+          cache-from: type=registry,ref=${{ steps.meta.outputs.cache_output_tag }}
+
+      - name: Promote new ccache
+        if: ${{ matrix.config.ccache == true && steps.build_server.conclusion == 'success' }}
+        shell: bash
+        run: |
+          rm -rf ${{ runner.temp }}/ccache-${{ matrix.config.tag }}
+          mv ${{ runner.temp }}/ccache-${{ matrix.config.tag }}-new ${{ runner.temp }}/ccache-${{ matrix.config.tag }}
+
+      - name: Save ccache
+        if: ${{ matrix.config.ccache == true && steps.build_server.conclusion == 'success' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/ccache-${{ matrix.config.tag }}
+          key: docker-ccache-${{ matrix.config.tag }}-${{ github.run_id }}
 
       - name: Export digest metadata
         shell: bash
