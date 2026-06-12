@@ -3,22 +3,61 @@ ARG BUILD_DATE=N/A
 ARG APP_VERSION=N/A
 ARG APP_REVISION=N/A
 
+# Empty default seed; CI overrides with --build-context ccache_seed=<dir>
+FROM scratch AS ccache_seed
+
 FROM docker.io/ubuntu:$UBUNTU_VERSION AS build
 
-# Install build tools
-RUN apt update && apt install -y git build-essential cmake wget xz-utils
-
-# Install SSL and Vulkan SDK dependencies
-RUN apt install -y libssl-dev curl \
-    libxcb-xinput0 libxcb-xinerama0 libxcb-cursor-dev libvulkan-dev glslc spirv-headers
+# Install build tools and SSL/Vulkan SDK dependencies. Node.js (24, matching CI)
+# is needed because the Web UI is built from source via npm during the cmake
+# build (see the LLAMA_USE_PREBUILT_UI=OFF note below).
+RUN apt update && apt install -y \
+    git build-essential cmake ccache wget xz-utils \
+    libssl-dev curl ca-certificates gnupg \
+    libxcb-xinput0 libxcb-xinerama0 libxcb-cursor-dev libvulkan-dev glslc spirv-headers \
+    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+    && apt install -y nodejs
 
 # Build it
 WORKDIR /app
 
+# Restore ccache state from build context (empty on first run)
+COPY --from=ccache_seed / /root/.ccache/
+
 COPY . .
 
-RUN cmake -B build -DGGML_NATIVE=OFF -DGGML_VULKAN=ON -DLLAMA_BUILD_TESTS=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON && \
-    cmake --build build --config Release -j$(nproc)
+# Vulkan shader generation forks many concurrent glslc/spirv-opt jobs and can
+# exhaust runner memory. fork() then fails with ENOMEM ("Cannot allocate memory"
+# / "Failed to fork process"); vulkan-shaders-gen logs the error but still exits
+# 0, silently dropping shaders and shipping a libggml-vulkan.so with a broken GPU
+# path. Memory headroom is provided by swap added in the workflow (see
+# docker.yml); this step is the safety net: pipe the build through tee and fail
+# if the generator logged any compile/fork error, since cmake itself returns 0
+# in the silent-drop case. pipefail + -e (set via SHELL) make both the pipeline
+# and a real cmake failure fatal.
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
+# LLAMA_USE_PREBUILT_UI=OFF disables the HF Bucket download in
+# scripts/ui-assets.cmake; with LLAMA_BUILD_UI=ON (default) the Web UI is built
+# from source via npm instead, so we never ship a stale bucket release. The
+# npm build runs as a build-time custom target, so its output lands in
+# build.log; the UI guard below turns a non-fatal "no embedded UI" warning into
+# a hard failure, matching the fail-loud philosophy of the shader guard.
+RUN cmake -B build -DGGML_NATIVE=OFF -DGGML_VULKAN=ON -DLLAMA_BUILD_TESTS=OFF \
+        -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON \
+        -DLLAMA_USE_PREBUILT_UI=OFF \
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache; \
+    cmake --build build --config Release -j$(nproc) 2>&1 | tee /tmp/build.log; \
+    if grep -qiE 'cannot compile|Failed to fork process|Cannot allocate memory' /tmp/build.log; then \
+        echo "ERROR: vulkan-shaders-gen reported compile/fork failures; refusing to ship an incomplete shader set" >&2; \
+        exit 1; \
+    fi; \
+    if grep -qiE 'UI: npm .*failed|UI: npm not found|UI: npm build finished but assets missing|building without an embedded UI' /tmp/build.log; then \
+        echo "ERROR: web UI npm build failed; refusing to ship a server without an embedded UI" >&2; \
+        exit 1; \
+    fi; \
+    rm -f /tmp/build.log; \
+    ccache -s
 
 RUN mkdir -p /app/lib && \
     find build -name "*.so*" -exec cp -P {} /app/lib \;
@@ -34,6 +73,9 @@ RUN mkdir -p /app/full \
 
 ## Base image
 FROM docker.io/ubuntu:$UBUNTU_VERSION AS base
+
+# Restore the default shell (the build stage switched to bash for pipefail).
+SHELL ["/bin/sh", "-c"]
 
 ARG BUILD_DATE=N/A
 ARG APP_VERSION=N/A
@@ -109,3 +151,7 @@ WORKDIR /app
 HEALTHCHECK CMD [ "curl", "-f", "http://localhost:8080/health" ]
 
 ENTRYPOINT [ "/app/llama-server" ]
+
+### ccache export — CI extracts /root/.ccache to host via type=local
+FROM scratch AS ccache-export
+COPY --from=build /root/.ccache /
