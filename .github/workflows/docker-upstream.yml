@@ -1,0 +1,108 @@
+# Manually build & publish a Docker image from a branch of upstream
+# ggml-org/llama.cpp. Mirrors docker.yml's vulkan/server matrix entry, but
+# the source tree is replaced with the upstream branch and only the local
+# .devops/vulkan.Dockerfile is overlaid on top so the build steps match
+# what the nightly publish does.
+
+name: Publish Docker image (upstream branch)
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_branch:
+        description: 'Branch name from ggml-org/llama.cpp to build'
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.upstream_branch }}
+  cancel-in-progress: true
+
+permissions:
+  packages: write
+
+jobs:
+  push_to_registry:
+    name: Build upstream branch and push to registry
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out local repo (for Dockerfile)
+        uses: actions/checkout@v6
+        with:
+          path: local
+
+      - name: Check out upstream branch (build context)
+        uses: actions/checkout@v6
+        with:
+          repository: ggml-org/llama.cpp
+          ref: ${{ inputs.upstream_branch }}
+          path: upstream
+          fetch-depth: 0
+
+      - name: Overlay local vulkan Dockerfile onto upstream tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp local/.devops/vulkan.Dockerfile upstream/.devops/vulkan.Dockerfile
+
+      - name: Determine tag names
+        id: meta
+        shell: bash
+        working-directory: upstream
+        run: |
+          set -euo pipefail
+
+          REPO_OWNER="${GITHUB_REPOSITORY_OWNER@L}"
+          REPO_NAME="${{ github.event.repository.name }}"
+          IMAGE_REPO="ghcr.io/${REPO_OWNER}/${REPO_NAME}"
+
+          SAFE_BRANCH="$(echo "${{ inputs.upstream_branch }}" | tr '/' '-')"
+          BUILD_NUMBER="$(git rev-list --count HEAD)"
+          SHORT_HASH="$(git rev-parse --short=7 HEAD)"
+          SRC_TAG="${SAFE_BRANCH}-b${BUILD_NUMBER}-${SHORT_HASH}"
+
+          VARIANT="vulkan-${SAFE_BRANCH}"
+          CACHE_TAG="${IMAGE_REPO}:buildcache-${VARIANT}-amd64"
+          IMAGE_TAG="${IMAGE_REPO}:server-${VARIANT}"
+          IMAGE_TAG_VERSIONED="${IMAGE_REPO}:server-${VARIANT}-${SRC_TAG}"
+
+          echo "image_repo=$IMAGE_REPO" >> "$GITHUB_OUTPUT"
+          echo "cache_tag=$CACHE_TAG" >> "$GITHUB_OUTPUT"
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          echo "image_tag_versioned=$IMAGE_TAG_VERSIONED" >> "$GITHUB_OUTPUT"
+
+          echo "Will push: $IMAGE_TAG"
+          echo "Will push: $IMAGE_TAG_VERSIONED"
+        env:
+          GITHUB_REPOSITORY_OWNER: '${{ github.repository_owner }}'
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4
+        with:
+          image: tonistiigi/binfmt:qemu-v10.2.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+
+      - name: Log in to Docker Registry
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Server Docker image
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
+        with:
+          context: upstream
+          platforms: linux/amd64
+          file: upstream/.devops/vulkan.Dockerfile
+          target: server
+          push: true
+          provenance: false
+          tags: |
+            ${{ steps.meta.outputs.image_tag }}
+            ${{ steps.meta.outputs.image_tag_versioned }}
+          cache-from: type=registry,ref=${{ steps.meta.outputs.cache_tag }}
+          cache-to: type=registry,ref=${{ steps.meta.outputs.cache_tag }},mode=max
