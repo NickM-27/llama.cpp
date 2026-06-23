@@ -1,7 +1,12 @@
 #include "mtmd-image.h"
 
+#define STB_IMAGE_RESIZE_IMPLEMENTATION
+#include "stb/stb_image_resize2.h"
+
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <string>
 #include <vector>
 
 void mtmd_image_preproc_out::append(const clip_hparams & hparams, const clip_image_u8 & img, bool normalized) {
@@ -45,6 +50,10 @@ struct img_tool {
             std::array<uint8_t, 3> pad_color = {0, 0, 0}) {
         dst.set_size(target_resolution, src.is_placeholder());
 
+        // allow overriding the resize algorithm at runtime for A/B accuracy testing,
+        // e.g. LLAMA_MTMD_RESIZE_ALGO=bilinear_simd ./llama-mtmd-cli ...
+        algo = resolve_algo(algo);
+
         if (src.is_placeholder()) {
             // no-op for placeholder image, just set the size and return
             return;
@@ -58,19 +67,7 @@ struct img_tool {
 
         if (padding == PAD_NONE) {
             // direct resize
-            switch (algo) {
-                case RESIZE_ALGO_BILINEAR:
-                    resize_bilinear(src, dst, target_resolution.width, target_resolution.height);
-                    break;
-                case RESIZE_ALGO_BICUBIC:
-                    resize_bicubic(src, dst, target_resolution.width, target_resolution.height);
-                    break;
-                case RESIZE_ALGO_BICUBIC_PILLOW:
-                    resize_bicubic_pillow(src, dst, target_resolution.width, target_resolution.height);
-                    break;
-                default:
-                    throw std::runtime_error("Unsupported resize algorithm");
-            }
+            apply_resize(src, dst, target_resolution.width, target_resolution.height, algo);
         } else {
             // resize with padding
             clip_image_u8 resized_image;
@@ -87,19 +84,7 @@ struct img_tool {
                 new_height = std::min(static_cast<int>(std::ceil(src.get_size().height * scale)), target_resolution.height);
             }
 
-            switch (algo) {
-                case RESIZE_ALGO_BILINEAR:
-                    resize_bilinear(src, resized_image, new_width, new_height);
-                    break;
-                case RESIZE_ALGO_BICUBIC:
-                    resize_bicubic(src, resized_image, new_width, new_height);
-                    break;
-                case RESIZE_ALGO_BICUBIC_PILLOW:
-                    resize_bicubic_pillow(src, resized_image, new_width, new_height);
-                    break;
-                default:
-                    throw std::runtime_error("Unsupported resize algorithm");
-            }
+            apply_resize(src, resized_image, new_width, new_height, algo);
 
             // fill dst with pad_color
             fill(dst, pad_color);
@@ -114,6 +99,89 @@ struct img_tool {
             }
             composite(dst, resized_image, offset_x, offset_y);
         }
+    }
+
+    // dispatch to the concrete resize implementation
+    static void apply_resize(const clip_image_u8 & src, clip_image_u8 & dst, int width, int height, resize_algo algo) {
+        switch (algo) {
+            case RESIZE_ALGO_BILINEAR:
+                resize_bilinear(src, dst, width, height);
+                break;
+            case RESIZE_ALGO_BICUBIC:
+                resize_bicubic(src, dst, width, height);
+                break;
+            case RESIZE_ALGO_BICUBIC_PILLOW:
+                resize_bicubic_pillow(src, dst, width, height);
+                break;
+            case RESIZE_ALGO_BILINEAR_SIMD:
+                resize_bilinear_simd(src, dst, width, height);
+                break;
+            case RESIZE_ALGO_BICUBIC_SIMD:
+                resize_bicubic_simd(src, dst, width, height);
+                break;
+            default:
+                throw std::runtime_error("Unsupported resize algorithm");
+        }
+    }
+
+    // optional runtime override via the LLAMA_MTMD_RESIZE_ALGO env var, read once.
+    // lets us A/B test resize quality (e.g. against PIL references) without rebuilding.
+    static resize_algo resolve_algo(resize_algo algo) {
+        static const int override_algo = [] {
+            const char * env = std::getenv("LLAMA_MTMD_RESIZE_ALGO");
+            if (env == nullptr) {
+                return -1;
+            }
+            const std::string v = env;
+            int picked = -1;
+            if      (v == "bilinear")       picked = RESIZE_ALGO_BILINEAR;
+            else if (v == "bicubic")        picked = RESIZE_ALGO_BICUBIC;
+            else if (v == "bicubic_pillow") picked = RESIZE_ALGO_BICUBIC_PILLOW;
+            else if (v == "bilinear_simd")  picked = RESIZE_ALGO_BILINEAR_SIMD;
+            else if (v == "bicubic_simd")   picked = RESIZE_ALGO_BICUBIC_SIMD;
+            else {
+                LOG_WRN("%s: unknown LLAMA_MTMD_RESIZE_ALGO='%s', ignoring\n", __func__, env);
+                return -1;
+            }
+            LOG_INF("%s: overriding image resize algorithm with LLAMA_MTMD_RESIZE_ALGO='%s'\n", __func__, env);
+            return picked;
+        }();
+        return override_algo < 0 ? algo : static_cast<resize_algo>(override_algo);
+    }
+
+    // SIMD-accelerated, antialiased resize backed by stb_image_resize2.
+    // resamples in the raw (gamma-encoded) pixel space, matching PIL / HF transformers
+    // preprocessing (which does NOT linearize to sRGB before resampling).
+    static void resize_stb(const clip_image_u8 & src, clip_image_u8 & dst, int target_width, int target_height, stbir_filter filter) {
+        const auto src_size = src.get_size();
+        if (src_size.width == 0 || src_size.height == 0) { dst.set_size({0, 0}, false); return; }
+        if (target_width  <= 0) target_width  = 1;
+        if (target_height <= 0) target_height = 1;
+
+        dst.set_size({target_width, target_height}, false);
+
+        if (src.is_placeholder()) {
+            // no-op for placeholder image, just set the size and return
+            return;
+        }
+
+        std::vector<uint8_t> out_buf((size_t) target_width * (size_t) target_height * 3);
+        void * ret = stbir_resize(
+            src.get_ro_buf().data(), src_size.width, src_size.height, src_size.width * 3,
+            out_buf.data(), target_width, target_height, target_width * 3,
+            STBIR_RGB, STBIR_TYPE_UINT8, STBIR_EDGE_CLAMP, filter);
+        if (ret == nullptr) {
+            throw std::runtime_error("stbir_resize failed");
+        }
+        dst.cpy_buf(out_buf);
+    }
+
+    static void resize_bilinear_simd(const clip_image_u8 & src, clip_image_u8 & dst, int target_width, int target_height) {
+        resize_stb(src, dst, target_width, target_height, STBIR_FILTER_TRIANGLE);
+    }
+
+    static void resize_bicubic_simd(const clip_image_u8 & src, clip_image_u8 & dst, int target_width, int target_height) {
+        resize_stb(src, dst, target_width, target_height, STBIR_FILTER_CATMULLROM);
     }
 
     static void crop(const clip_image_u8 & image, clip_image_u8 & dst, int x, int y, int w, int h) {
