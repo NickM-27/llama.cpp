@@ -19,6 +19,7 @@
 #include "fattn-vec.hpp"
 #include "fattn.hpp"
 #include "fattn-onednn.hpp"
+#include "fattn-hybrid.hpp"
 
 
 #define FATTN_VEC_CASE(D, type_K, type_V)                                                                        \
@@ -99,6 +100,7 @@ enum best_fattn_kernel {
     BEST_FATTN_KERNEL_VEC      = 100,
     BEST_FATTN_KERNEL_ONEDNN   = 150, // added enum for onednn==150
     BEST_FATTN_KERNEL_TILE     = 200,
+    BEST_FATTN_KERNEL_HYBRID   = 250, // dequant K/V → oneDNN SDPA
     BEST_FATTN_KERNEL_MKL      = 300,
 };
 
@@ -139,6 +141,12 @@ static best_fattn_kernel ggml_sycl_get_best_fattn_kernel(const int device, const
     // Set GGML_SYCL_ENABLE_MKL_FA=0 to force TILE/VEC path for A/B testing.
     // Example: GGML_SYCL_ENABLE_MKL_FA=0 llama-cli -m model.gguf -fa -ngl 99 ...
     // Note: MKL GEMM calls are incompatible with SYCL graph capture replay.
+
+    // Path 1: Hybrid - dequantize K/V to F16, then oneDNN SDPA.
+    if (ggml_sycl_flash_attn_ext_hybrid_supported(dst)) {
+        return BEST_FATTN_KERNEL_HYBRID;
+    }
+
     static int mkl_enable = ggml_sycl_get_env("GGML_SYCL_ENABLE_MKL_FA", 1);
     // MKL is validated for the mainstream GQA envelope: grouped-query
     // (gqa_ratio >= 2), head_dim a multiple of 64 in [64,512] with matching
@@ -308,6 +316,15 @@ void ggml_sycl_flash_attn_ext(ggml_backend_sycl_context & ctx, ggml_tensor * dst
         case BEST_FATTN_KERNEL_VEC:
             ggml_sycl_flash_attn_ext_vec(ctx, dst);
             break;
+#if GGML_SYCL_DNNL
+        // ONEDNN dispatch reserved for PR #25222:
+        // case BEST_FATTN_KERNEL_ONEDNN:
+        //     ggml_sycl_flash_attn_ext_onednn(ctx, dst);
+        //     break;
+        case BEST_FATTN_KERNEL_HYBRID:
+            ggml_sycl_flash_attn_ext_hybrid(ctx, dst);
+            break;
+#endif
         case BEST_FATTN_KERNEL_MKL:
             ggml_sycl_flash_attn_ext_mkl(ctx, dst);
             break;
