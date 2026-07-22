@@ -17,24 +17,33 @@ RUN npm ci
 COPY tools/ui/ ./
 RUN LLAMA_BUILD_NUMBER="$APP_VERSION" npm run build
 
+# Empty default seed; CI overrides with --build-context ccache_seed=<dir>
+FROM scratch AS ccache_seed
+
 FROM docker.io/ubuntu:$UBUNTU_VERSION AS build
 
-# Install build tools
-RUN apt update && apt install -y git build-essential cmake wget xz-utils
-
-# Install SSL and Vulkan SDK dependencies
-RUN apt install -y libssl-dev curl \
+# Install build tools and SSL/Vulkan SDK dependencies. The Web UI is built
+# separately in the `web` stage and copied in as prebuilt assets, so Node.js is
+# not needed here.
+RUN apt update && apt install -y \
+    git build-essential cmake ccache wget xz-utils \
+    libssl-dev curl ca-certificates gnupg \
     libxcb-xinput0 libxcb-xinerama0 libxcb-cursor-dev libvulkan-dev glslc spirv-headers
 
 # Build it
 WORKDIR /app
 
+# Restore ccache state from build context (empty on first run)
+COPY --from=ccache_seed / /root/.ccache/
 COPY . .
-
 COPY --from=web /app/tools/ui/dist tools/ui/dist
 
-RUN cmake -B build -DGGML_NATIVE=OFF -DGGML_VULKAN=ON -DLLAMA_BUILD_TESTS=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON && \
-    cmake --build build --config Release -j$(nproc)
+RUN cmake -B build -DGGML_NATIVE=OFF -DGGML_VULKAN=ON -DLLAMA_BUILD_TESTS=OFF \
+        -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON \
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache && \
+    cmake --build build --config Release -j$(nproc) && \
+    ccache -s
 
 RUN mkdir -p /app/lib && \
     find build -name "*.so*" -exec cp -P {} /app/lib \;
@@ -65,8 +74,12 @@ LABEL org.opencontainers.image.created=$BUILD_DATE \
       org.opencontainers.image.source=$IMAGE_SOURCE
 
 RUN apt-get update \
+    && apt-get install -y software-properties-common \
+    && add-apt-repository -y ppa:kisak/kisak-mesa \
+    && apt-get update \
     && apt-get install -y libgomp1 curl ffmpeg libvulkan1 mesa-vulkan-drivers \
     libglvnd0 libgl1 libglx0 libegl1 libgles2 \
+    && apt-get purge -y software-properties-common \
     && apt autoremove -y \
     && apt clean -y \
     && rm -rf /tmp/* /var/tmp/* \
@@ -125,3 +138,7 @@ WORKDIR /app
 HEALTHCHECK CMD [ "curl", "-f", "http://localhost:8080/health" ]
 
 ENTRYPOINT [ "/app/llama-server" ]
+
+### ccache export — CI extracts /root/.ccache to host via type=local
+FROM scratch AS ccache-export
+COPY --from=build /root/.ccache /
