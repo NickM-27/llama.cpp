@@ -1,28 +1,11 @@
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
+# Same as docker.yml, but builds the intel (SYCL) tag from the sycl branch,
+# which carries the SYCL flash attention PRs (ggml-org/llama.cpp#25025 and
+# #25312) pre-merged with conflicts resolved.
 
-# GitHub recommends pinning actions to a commit SHA.
-# To get a newer version, you will need to update the SHA.
-# You can also reference a tag or branch, but the action may change without warning.
-
-name: Publish Docker image
+name: Publish SYCL Docker image
 
 on:
-  workflow_dispatch: # allows manual triggering
-    inputs:
-      skip_s390x:
-        description: "Skip the s390x build target (useful for fast test runs that do not need the IBM Z runner)"
-        type: boolean
-        default: false
-  schedule:
-    # Rebuild daily rather than on every push because it is expensive
-    - cron: '12 4 * * *'
-  workflow_run:
-    workflows: ["Sync with upstream"]
-    types:
-      - completed
+  workflow_dispatch: # manual triggering only
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
@@ -48,13 +31,13 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          ssh-key: ${{ secrets.DEPLOY_KEY_RELEASE }}
+          ref: sycl
 
       - name: Determine source tag name
         id: srctag
         uses: ./.github/actions/get-tag-name
         env:
-          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+          BRANCH_NAME: sycl
 
       - name: Create and push git tag
         env:
@@ -68,7 +51,7 @@ jobs:
     needs: create_tag
     uses: ./.github/workflows/ui-build.yml
     with:
-      ui_version: ${{ needs.create_tag.outputs.source_tag }}
+      hf_ui_version: ${{ needs.create_tag.outputs.source_tag }}
 
   prepare_matrices:
     name: Prepare Docker matrices
@@ -81,22 +64,15 @@ jobs:
       - name: Generate build and merge matrices
         id: matrices
         shell: bash
-        env:
-          SKIP_S390X: ${{ inputs.skip_s390x || 'false' }}
         run: |
           set -euo pipefail
 
           # Keep all build targets in one place and derive merge targets from it.
           cat > build-matrix.json <<'JSON'
           [
-            { "tag": "vulkan", "dockerfile": ".devops/vulkan.Dockerfile", "platforms": "linux/amd64", "full": false, "light": false, "server": true, "free_disk_space": false, "runs_on": "ubuntu-24.04", "ccache": true }
+            { "tag": "intel", "dockerfile": ".devops/intel.Dockerfile", "platforms": "linux/amd64", "full": false, "light": false, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04", "ccache": false }
           ]
           JSON
-
-          if [ "${SKIP_S390X}" = "true" ]; then
-            jq 'map(select(.platforms != "linux/s390x"))' build-matrix.json > build-matrix.json.tmp
-            mv build-matrix.json.tmp build-matrix.json
-          fi
 
           BUILD_MATRIX="$(jq -c . build-matrix.json)"
           MERGE_MATRIX="$(jq -c '
@@ -113,20 +89,6 @@ jobs:
               | .server = (.server or ($entry.server // false))
               | .arches += [($entry.platforms | sub("^linux/"; ""))]
             ))
-            # Backward compatibility: s390x tags are aliases of cpu for the linux/s390x platform.
-            | if (has("cpu") and (((.cpu.arches // []) | index("s390x")) != null)) then
-                . + {
-                  s390x: {
-                    tag: "s390x",
-                    arches: ["s390x"],
-                    full: .cpu.full,
-                    light: .cpu.light,
-                    server: .cpu.server
-                  }
-                }
-              else
-                .
-              end
             | [.[] | .arches = (.arches | unique | sort | join(" "))]
           ' build-matrix.json)"
 
@@ -154,7 +116,7 @@ jobs:
         if: ${{ matrix.config.prebuilt_ui == true }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: llama-ui.zip
+          name: ui-build
           path: tools/ui/dist
 
       - name: Set up QEMU
@@ -244,7 +206,7 @@ jobs:
 
       - name: Build and push Full Docker image by digest
         id: build_full
-        if: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && matrix.config.full == true }}
+        if: ${{ github.event_name == 'workflow_dispatch' && matrix.config.full == true }}
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
         with:
           context: .
@@ -269,19 +231,13 @@ jobs:
             manifest:org.opencontainers.image.description=LLM inference in C/C++
             manifest:org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
             manifest:org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-          # using github experimental cache
-          #cache-from: type=gha
-          #cache-to: type=gha,mode=max
-          # return to this if the experimental github cache is having issues
-          #cache-to: type=local,dest=/tmp/.buildx-cache
-          #cache-from: type=local,src=/tmp/.buildx-cache
           # using registry cache (no storage limit)
           cache-from: type=registry,ref=${{ steps.meta.outputs.cache_output_tag }}
           cache-to: type=registry,ref=${{ steps.meta.outputs.cache_output_tag }},mode=max
 
       - name: Build and push Light Docker image by digest
         id: build_light
-        if: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && matrix.config.light == true }}
+        if: ${{ github.event_name == 'workflow_dispatch' && matrix.config.light == true }}
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
         with:
           context: .
@@ -306,19 +262,13 @@ jobs:
             manifest:org.opencontainers.image.description=LLM inference in C/C++
             manifest:org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
             manifest:org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-          # using github experimental cache
-          #cache-from: type=gha
-          #cache-to: type=gha,mode=max
-          # return to this if the experimental github cache is having issues
-          #cache-to: type=local,dest=/tmp/.buildx-cache
-          #cache-from: type=local,src=/tmp/.buildx-cache
           # using registry cache (no storage limit)
           cache-from: type=registry,ref=${{ steps.meta.outputs.cache_output_tag }}
           cache-to: type=registry,ref=${{ steps.meta.outputs.cache_output_tag }},mode=max
 
       - name: Build and push Server Docker image by digest
         id: build_server
-        if: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_run') && matrix.config.server == true }}
+        if: ${{ github.event_name == 'workflow_dispatch' && matrix.config.server == true }}
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
         with:
           context: .
@@ -344,54 +294,9 @@ jobs:
             manifest:org.opencontainers.image.description=LLM inference in C/C++
             manifest:org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
             manifest:org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-          # using github experimental cache
-          #cache-from: type=gha
-          #cache-to: type=gha,mode=max
-          # return to this if the experimental github cache is having issues
-          #cache-to: type=local,dest=/tmp/.buildx-cache
-          #cache-from: type=local,src=/tmp/.buildx-cache
           # using registry cache (no storage limit)
           cache-from: type=registry,ref=${{ steps.meta.outputs.cache_output_tag }}
           cache-to: type=registry,ref=${{ steps.meta.outputs.cache_output_tag }},mode=max
-
-      - name: Extract updated ccache
-        if: ${{ matrix.config.ccache == true && steps.build_server.conclusion == 'success' }}
-        timeout-minutes: 10
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
-        with:
-          context: .
-          platforms: ${{ matrix.config.platforms }}
-          file: ${{ matrix.config.dockerfile }}
-          target: ccache-export
-          # Export as a single tar stream rather than type=local. The local
-          # exporter writes ccache's tens of thousands of tiny files one-by-one
-          # over gRPC and intermittently stalls for hours; a tar is one stream.
-          outputs: type=tar,dest=${{ runner.temp }}/ccache-${{ matrix.config.tag }}-new.tar
-          build-contexts: ccache_seed=${{ runner.temp }}/ccache-${{ matrix.config.tag }}
-          build-args: |
-            # APP_VERSION must match the server build so the web/build stage cache
-            # keys line up and this stays a cache replay rather than a full rebuild.
-            APP_VERSION=${{ needs.create_tag.outputs.source_tag }}
-            ${{ matrix.config.ubuntu_version && format('UBUNTU_VERSION={0}', matrix.config.ubuntu_version) || '' }}
-            ${{ matrix.config.cuda_version && format('CUDA_VERSION={0}', matrix.config.cuda_version) || '' }}
-          cache-from: type=registry,ref=${{ steps.meta.outputs.cache_output_tag }}
-
-      - name: Promote new ccache
-        if: ${{ matrix.config.ccache == true && steps.build_server.conclusion == 'success' }}
-        shell: bash
-        run: |
-          rm -rf ${{ runner.temp }}/ccache-${{ matrix.config.tag }}
-          mkdir -p ${{ runner.temp }}/ccache-${{ matrix.config.tag }}
-          tar -xf ${{ runner.temp }}/ccache-${{ matrix.config.tag }}-new.tar \
-              -C ${{ runner.temp }}/ccache-${{ matrix.config.tag }}
-          rm -f ${{ runner.temp }}/ccache-${{ matrix.config.tag }}-new.tar
-
-      - name: Save ccache
-        if: ${{ matrix.config.ccache == true && steps.build_server.conclusion == 'success' }}
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ runner.temp }}/ccache-${{ matrix.config.tag }}
-          key: docker-ccache-${{ matrix.config.tag }}-${{ github.run_id }}
 
       - name: Export digest metadata
         shell: bash
@@ -440,11 +345,6 @@ jobs:
     name: Create shared tags from digests
     needs: [prepare_matrices, push_to_registry, create_tag]
     runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -456,6 +356,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: sycl
 
       - name: Get build date
         id: build_date
@@ -479,7 +380,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create tags from digests
-        id: create_tags
         shell: bash
         run: |
           set -euo pipefail
@@ -491,7 +391,6 @@ jobs:
           SRC_TAG="${{ needs.create_tag.outputs.source_tag }}"
           BUILD_DATE="${{ steps.build_date.outputs.date }}"
           COMMIT_SHA="${{ steps.checkout.outputs.commit }}"
-          echo "image_repo=${IMAGE_REPO}" >> "$GITHUB_OUTPUT"
           TAGS="${{ matrix.config.tag }}"
           ARCHES="${{ matrix.config.arches }}"
           DIGEST_GLOB="/tmp/digests/*.tsv"
@@ -513,11 +412,6 @@ jobs:
               local digest
 
               digest="$(awk -F '\t' -v t="$tag_name" -v a="$arch" -v i="$image_type" '$1 == t && $2 == a && $3 == i { print $4; exit }' ${DIGEST_GLOB})"
-
-              # Backward compatibility: s390x tags are aliases of cpu for the linux/s390x platform.
-              if [[ -z "$digest" && "$tag_name" == "s390x" && "$arch" == "s390x" ]]; then
-                digest="$(awk -F '\t' -v t="cpu" -v a="$arch" -v i="$image_type" '$1 == t && $2 == a && $3 == i { print $4; exit }' ${DIGEST_GLOB})"
-              fi
 
               if [[ -z "$digest" ]]; then
                 echo "Missing digest for tag=${tag_name} arch=${arch} image_type=${image_type}" >&2
@@ -558,16 +452,6 @@ jobs:
 
               echo "Creating ${merged_versioned_tag} from ${refs[*]}"
               docker buildx imagetools create "${annotations[@]}" --tag "${merged_versioned_tag}" "${refs[@]}"
-
-              if [[ "$tag_name" == "${TAGS%% *}" ]]; then
-                  local digest
-                  digest="$(docker buildx imagetools inspect "${merged_versioned_tag}" --format '{{.Manifest.Digest}}')"
-                  if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-                      echo "Invalid digest for ${merged_versioned_tag}: ${digest}" >&2
-                      exit 1
-                  fi
-                  echo "${image_type}_digest=${digest}" >> "$GITHUB_OUTPUT"
-              fi
           }
 
           for tag in $TAGS; do
@@ -591,24 +475,3 @@ jobs:
           done
         env:
           GITHUB_REPOSITORY_OWNER: '${{ github.repository_owner }}'
-
-      - name: Attest full image
-        if: ${{ matrix.config.full }}
-        uses: actions/attest@v4
-        with:
-          subject-name: ${{ steps.create_tags.outputs.image_repo }}
-          subject-digest: ${{ steps.create_tags.outputs.full_digest }}
-
-      - name: Attest light image
-        if: ${{ matrix.config.light }}
-        uses: actions/attest@v4
-        with:
-          subject-name: ${{ steps.create_tags.outputs.image_repo }}
-          subject-digest: ${{ steps.create_tags.outputs.light_digest }}
-
-      - name: Attest server image
-        if: ${{ matrix.config.server }}
-        uses: actions/attest@v4
-        with:
-          subject-name: ${{ steps.create_tags.outputs.image_repo }}
-          subject-digest: ${{ steps.create_tags.outputs.server_digest }}
