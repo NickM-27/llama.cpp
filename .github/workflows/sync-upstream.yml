@@ -1,0 +1,79 @@
+name: Sync with upstream
+
+on:
+  workflow_dispatch: # allows manual triggering
+  schedule:
+    # Check for upstream changes every 15 minutes. The minutes are offset from
+    # :00 on purpose: GitHub delays and drops scheduled runs under the
+    # top-of-the-hour load spike, which left the old '0 * * * *' cron firing
+    # only every 3-8 hours in practice.
+    - cron: '7,22,37,52 * * * *'
+
+permissions:
+  contents: write
+  actions: write # dispatch docker.yml after syncing new commits
+
+# Never let two syncs race on the same force-push.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_PAT }}
+
+      - name: Configure git
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/ggml-org/llama.cpp.git || true
+
+      - name: Fetch upstream
+        run: |
+          git fetch upstream
+
+      - name: Sync with upstream master
+        id: sync
+        run: |
+          # Check if we're on master branch
+          if [[ "${{ github.ref }}" != "refs/heads/master" ]]; then
+            echo "Not on master branch, skipping sync"
+            exit 0
+          fi
+
+          git checkout master
+          if git merge-base --is-ancestor upstream/master HEAD; then
+            echo "Already contains upstream master $(git rev-parse --short upstream/master), nothing to sync"
+            exit 0
+          fi
+
+          before="$(git rev-parse --short HEAD)"
+          # Try to sync with upstream master
+          git pull upstream master --rebase || git pull upstream master --no-rebase
+          git push origin master --force-with-lease
+          echo "Successfully synced with upstream master: ${before} -> $(git rev-parse --short HEAD)"
+          echo "synced=true" >> "$GITHUB_OUTPUT"
+
+      # Dispatched rather than chained with workflow_run so syncs that find
+      # nothing new don't start (or even log a skipped) Docker build.
+      # GITHUB_TOKEN may trigger workflow_dispatch runs.
+      - name: Trigger Docker build
+        if: steps.sync.outputs.synced == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run docker.yml --repo "${{ github.repository }}" --ref master
+
+      - name: Create sync log
+        run: |
+          echo "Sync completed at $(date)" > sync-log.txt
+          git log -1 --format="%H %s" upstream/master >> sync-log.txt
