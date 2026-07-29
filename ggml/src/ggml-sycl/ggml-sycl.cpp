@@ -5451,15 +5451,25 @@ static bool check_graph_compatibility(ggml_cgraph * cgraph) {
     }
 
     for (int i = 0; i < cgraph->n_nodes; i++) {
-        const ggml_op node_op = cgraph->nodes[i]->op;
+        const ggml_tensor * node    = cgraph->nodes[i];
+        const ggml_op       node_op = node->op;
         switch (node_op) {
             default:
                 break;
             case GGML_OP_CONCAT:
-                // ggml_sycl_op_concat() does a blocking host wait after memcpy operations,
-                // but wait() can't be called on the events returned by a queue recording
-                // to a graph.
-                [[fallthrough]];
+                // Only the contiguous dim==3 branch of ggml_sycl_op_concat() does a blocking host
+                // wait after its memcpys, and wait() can't be called on the events returned by a
+                // queue recording to a graph. Every other concat shape (dim 0..2, and any
+                // non-contiguous input) runs as a plain kernel with no host wait and is safe to
+                // record, so only bail on the one case that actually waits. Notably this keeps
+                // graphs enabled for the NextN/MTP draft head, whose e_norm/h_norm concat is dim 0.
+                if (ggml_get_op_params_i32(node, 0) == 3 &&
+                    ggml_is_contiguous(node->src[0]) && ggml_is_contiguous(node->src[1])) {
+                    GGML_LOG_INFO("%s: disabling SYCL graphs due to unsupported node type %s\n", __func__,
+                                  ggml_op_name(node_op));
+                    return false;
+                }
+                break;
             case GGML_OP_MUL_MAT_ID:
                 // ggml_sycl_mul_mat_id() does a blocking host wait on the sycl queue after
                 // submitting a memcpy operation, but wait() can't be called on a queue that
