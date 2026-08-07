@@ -70,7 +70,7 @@ jobs:
           # Keep all build targets in one place and derive merge targets from it.
           cat > build-matrix.json <<'JSON'
           [
-            { "tag": "intel", "dockerfile": ".devops/intel.Dockerfile", "platforms": "linux/amd64", "full": false, "light": false, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04", "ccache": false }
+            { "tag": "intel", "dockerfile": ".devops/intel.Dockerfile", "platforms": "linux/amd64", "full": false, "light": false, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04", "ccache": true }
           ]
           JSON
 
@@ -297,6 +297,45 @@ jobs:
           # using registry cache (no storage limit)
           cache-from: type=registry,ref=${{ steps.meta.outputs.cache_output_tag }}
           cache-to: type=registry,ref=${{ steps.meta.outputs.cache_output_tag }},mode=max
+
+      - name: Extract updated ccache
+        if: ${{ matrix.config.ccache == true && steps.build_server.conclusion == 'success' }}
+        timeout-minutes: 10
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
+        with:
+          context: .
+          platforms: ${{ matrix.config.platforms }}
+          file: ${{ matrix.config.dockerfile }}
+          target: ccache-export
+          # Export as a single tar stream rather than type=local. The local
+          # exporter writes ccache's tens of thousands of tiny files one-by-one
+          # over gRPC and intermittently stalls for hours; a tar is one stream.
+          outputs: type=tar,dest=${{ runner.temp }}/ccache-${{ matrix.config.tag }}-new.tar
+          build-contexts: ccache_seed=${{ runner.temp }}/ccache-${{ matrix.config.tag }}
+          build-args: |
+            # APP_VERSION must match the server build so the web/build stage cache
+            # keys line up and this stays a cache replay rather than a full rebuild.
+            APP_VERSION=${{ needs.create_tag.outputs.source_tag }}
+            ${{ matrix.config.ubuntu_version && format('UBUNTU_VERSION={0}', matrix.config.ubuntu_version) || '' }}
+            ${{ matrix.config.cuda_version && format('CUDA_VERSION={0}', matrix.config.cuda_version) || '' }}
+          cache-from: type=registry,ref=${{ steps.meta.outputs.cache_output_tag }}
+
+      - name: Promote new ccache
+        if: ${{ matrix.config.ccache == true && steps.build_server.conclusion == 'success' }}
+        shell: bash
+        run: |
+          rm -rf ${{ runner.temp }}/ccache-${{ matrix.config.tag }}
+          mkdir -p ${{ runner.temp }}/ccache-${{ matrix.config.tag }}
+          tar -xf ${{ runner.temp }}/ccache-${{ matrix.config.tag }}-new.tar \
+              -C ${{ runner.temp }}/ccache-${{ matrix.config.tag }}
+          rm -f ${{ runner.temp }}/ccache-${{ matrix.config.tag }}-new.tar
+
+      - name: Save ccache
+        if: ${{ matrix.config.ccache == true && steps.build_server.conclusion == 'success' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/ccache-${{ matrix.config.tag }}
+          key: docker-ccache-${{ matrix.config.tag }}-${{ github.run_id }}
 
       - name: Export digest metadata
         shell: bash
