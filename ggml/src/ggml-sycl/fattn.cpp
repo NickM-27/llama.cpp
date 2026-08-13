@@ -148,6 +148,7 @@ static best_fattn_kernel ggml_sycl_get_best_fattn_kernel(const int device, const
     // Example: GGML_SYCL_ENABLE_MKL_FA=0 llama-cli -m model.gguf -fa -ngl 99 ...
     // Note: MKL GEMM calls are incompatible with SYCL graph capture replay.
     static int mkl_enable = ggml_sycl_get_env("GGML_SYCL_ENABLE_MKL_FA", 1);
+
     // MKL is validated for the mainstream GQA envelope: grouped-query
     // (gqa_ratio >= 2), head_dim a multiple of 64 in [64,512] with matching
     // K/V head size, mask, no sinks/ALiBi/softcap. Gemma's global layers use
@@ -255,15 +256,21 @@ static best_fattn_kernel ggml_sycl_get_best_fattn_kernel(const int device, const
 
     // If there are no tensor cores available, use the generic tile kernel:
     if (can_use_vector_kernel) {
+        // decode-kernel override (g_ggml_sycl_fa_decode_kernel).
+        // Intercepts decode before the F16/quantized split.
+        if (Q->ne[1] <= 2 && g_ggml_sycl_fa_decode_kernel != GGML_SYCL_FA_DECODE_AUTO) {
+            return g_ggml_sycl_fa_decode_kernel == GGML_SYCL_FA_DECODE_VEC
+                ? BEST_FATTN_KERNEL_VEC : BEST_FATTN_KERNEL_TILE;
+        }
         if (!ggml_is_quantized(K->type) && !ggml_is_quantized(V->type)) {
             if (Q->ne[1] == 1) {
                 if (!gqa_opt_applies) {
-                    return BEST_FATTN_KERNEL_VEC;
+                    return BEST_FATTN_KERNEL_VEC;   // F16 MHA decode: VEC (fold-in did not pass)
                 }
             }
         } else {
             if (Q->ne[1] <= 2) {
-                return BEST_FATTN_KERNEL_VEC;
+                return BEST_FATTN_KERNEL_TILE;      // quantized decode: TILE (gate fix - was forced VEC)
             }
         }
     }
