@@ -466,7 +466,8 @@ jobs:
               local tag_name="$2"
               local suffix="$3"
 
-              local merged_tag="${PREFIX}${image_type}${suffix}"
+              # test tag (e.g. intel-server-test): keeps the regular server-intel image untouched
+              local merged_tag="${PREFIX}${tag_name}-${image_type}-test"
               local merged_versioned_tag="${merged_tag}-${SRC_TAG}"
 
               local refs=()
