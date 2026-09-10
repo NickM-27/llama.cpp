@@ -11,6 +11,9 @@ export const SETTINGS_KEYS = {
 	API_KEY: 'apiKey',
 	AUTO_MIC_ON_EMPTY: 'autoMicOnEmpty',
 	BACKEND_SAMPLING: 'backend_sampling',
+	COMPACTION_MODEL: 'compactionModel',
+	COMPACTION_PROMPT: 'compactionPrompt',
+	COMPACTION_USE_CUSTOM_MODEL: 'compactionUseCustomModel',
 	CONVERSATION_TABS: 'conversationTabs',
 	COPY_TEXT_ATTACHMENTS_AS_PLAIN_TEXT: 'copyTextAttachmentsAsPlainText',
 	CUSTOM_CSS: 'customCss',
@@ -67,11 +70,13 @@ export const SETTINGS_KEYS = {
 	TEMPERATURE: 'temperature',
 	// General
 	THEME: 'theme',
+	TITLE_GENERATION_MODEL: 'titleGenerationModel',
 	TITLE_GENERATION_PROMPT: 'titleGenerationPrompt',
 	TITLE_GENERATION_USE_FIRST_LINE: 'titleGenerationUseFirstLine',
 	TITLE_GENERATION_USE_LLM: 'titleGenerationUseLLM',
 	TOP_K: 'top_k',
 	TOP_P: 'top_p',
+	TRANSCRIPTION_MODEL: 'transcriptionModel',
 	TYP_P: 'typ_p',
 	XTC_PROBABILITY: 'xtc_probability',
 	XTC_THRESHOLD: 'xtc_threshold'
