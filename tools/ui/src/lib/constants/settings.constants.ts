@@ -170,6 +170,18 @@ export const SETTINGS_REGISTRY: SettingsSectionEntry[] = [
 				type: SettingsFieldType.TEXTAREA
 			},
 			{
+				defaultValue: TITLE_GENERATION.MODEL_AUTO,
+				dependsOn: SETTINGS_KEYS.TITLE_GENERATION_USE_LLM,
+				emptyOption: {
+					label: 'Auto (model of the conversation)',
+					value: TITLE_GENERATION.MODEL_AUTO
+				},
+				help: 'Model that writes the title. Pick a smaller one to keep the chat model free. Router mode only.',
+				key: SETTINGS_KEYS.TITLE_GENERATION_MODEL,
+				label: 'LLM title generation model',
+				type: SettingsFieldType.MODEL_SELECT
+			},
+			{
 				defaultValue: false,
 				help: 'Counterpart of the conversation title radio; stored and synced without a dedicated UI field.',
 				key: SETTINGS_KEYS.TITLE_GENERATION_USE_LLM,

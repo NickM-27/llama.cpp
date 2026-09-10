@@ -7,7 +7,11 @@
  * {@link ModelsStore.status}; tracks which conversations use which models.
  */
 
-import { FAVORITE_MODELS_LOCALSTORAGE_KEY, TRANSCRIPTION_MODEL_AUTO } from '$lib/constants';
+import {
+	FAVORITE_MODELS_LOCALSTORAGE_KEY,
+	TITLE_GENERATION,
+	TRANSCRIPTION_MODEL_AUTO
+} from '$lib/constants';
 import { ServerModelStatus } from '$lib/enums';
 import { ModelsService } from '$lib/services/models.service';
 // direct imports between stores, not via the barrel, to avoid circular deps
@@ -113,6 +117,25 @@ class ModelsStore implements ModelPropsHost, ModelStatusHost {
 
 	get status() {
 		return this._status;
+	}
+
+	/**
+	 * Model that writes conversation titles (ROUTER mode only). The
+	 * titleGenerationModel setting wins when that model is in the list, else
+	 * the model the conversation runs on.
+	 */
+	get titleModelName(): string | null {
+		if (!serverStore.isRouterMode) return null;
+
+		const preferred = settingsStore.config.titleGenerationModel;
+
+		if (typeof preferred === 'string' && preferred !== TITLE_GENERATION.MODEL_AUTO) {
+			const model = this.models.find((m) => m.model === preferred);
+
+			if (model) return model.model;
+		}
+
+		return this.selectedModelName;
 	}
 
 	/**
