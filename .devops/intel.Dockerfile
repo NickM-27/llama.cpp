@@ -7,17 +7,8 @@ ARG APP_REVISION=N/A
 
 ARG NODE_VERSION=24
 
-FROM docker.io/node:$NODE_VERSION AS web
-
-ARG APP_VERSION
-
-WORKDIR /app/tools/ui
-
-COPY tools/ui/package.json tools/ui/package-lock.json ./
-RUN npm ci
-
-COPY tools/ui/ ./
-RUN LLAMA_BUILD_NUMBER="$APP_VERSION" npm run build
+# Empty default seed; CI overrides with --build-context ccache_seed=<dir>
+FROM scratch AS ccache_seed
 
 FROM docker.io/intel/deep-learning-essentials:$ONEAPI_VERSION AS build
 
@@ -25,7 +16,7 @@ ARG GGML_SYCL_F16=ON
 ARG LEVEL_ZERO_VERSION=1.28.2
 ARG LEVEL_ZERO_UBUNTU_VERSION=u24.04
 RUN apt-get update && \
-    apt-get install -y git libssl-dev wget ca-certificates && \
+    apt-get install -y git libssl-dev wget ca-certificates ccache && \
     cd /tmp && \
     wget -q "https://github.com/oneapi-src/level-zero/releases/download/v${LEVEL_ZERO_VERSION}/level-zero_${LEVEL_ZERO_VERSION}%2B${LEVEL_ZERO_UBUNTU_VERSION}_amd64.deb" -O level-zero.deb && \
     wget -q "https://github.com/oneapi-src/level-zero/releases/download/v${LEVEL_ZERO_VERSION}/level-zero-devel_${LEVEL_ZERO_VERSION}%2B${LEVEL_ZERO_UBUNTU_VERSION}_amd64.deb" -O level-zero-devel.deb && \
@@ -34,9 +25,10 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-COPY . .
+# Restore ccache state from build context (empty on first run)
+COPY --from=ccache_seed / /root/.ccache/
 
-COPY --from=web /app/tools/ui/dist tools/ui/dist
+COPY . .
 
 RUN if [ "${GGML_SYCL_F16}" = "ON" ]; then \
         echo "GGML_SYCL_F16 is set" \
@@ -44,8 +36,11 @@ RUN if [ "${GGML_SYCL_F16}" = "ON" ]; then \
         && export SYCL_PROGRAM_COMPILE_OPTIONS="-cl-fp32-correctly-rounded-divide-sqrt"; \
     fi && \
     echo "Building with dynamic libs" && \
-    cmake -B build -DGGML_NATIVE=OFF -DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DLLAMA_BUILD_TESTS=OFF ${OPT_SYCL_F16} && \
-    cmake --build build --config Release -j$(nproc)
+    cmake -B build -DGGML_NATIVE=OFF -DGGML_SYCL=ON -DGGML_SYCL_DEVICE_ARCH=xe2 -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DLLAMA_BUILD_TESTS=OFF ${OPT_SYCL_F16} \
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache && \
+    cmake --build build --config Release -j$(nproc) && \
+    ccache -s
 
 RUN mkdir -p /app/lib && \
     find build -name "*.so*" -exec cp -P {} /app/lib \;
@@ -160,3 +155,7 @@ WORKDIR /app
 HEALTHCHECK CMD [ "curl", "-f", "http://localhost:8080/health" ]
 
 ENTRYPOINT [ "/app/llama-server" ]
+
+### ccache export — CI extracts /root/.ccache to host via type=local
+FROM scratch AS ccache-export
+COPY --from=build /root/.ccache /
