@@ -7,22 +7,8 @@ ARG APP_REVISION=N/A
 
 ARG NODE_VERSION=24
 
-FROM docker.io/node:$NODE_VERSION AS web
-
-ARG APP_VERSION
-
-WORKDIR /app/ui/apps/chat
-
-COPY ui/apps/chat/package.json ui/apps/chat/package-lock.json ./
-RUN npm ci
-
-COPY ui/apps/chat/ ./
-# the app compiles Llama UI, Llama Voice and the harness from their sources next to it
-COPY ui/lib/ui/package.json /app/ui/lib/ui/package.json
-COPY ui/lib/ui/src/lib/ /app/ui/lib/ui/src/lib/
-COPY ui/lib/voice/src/ /app/ui/lib/voice/src/
-COPY ui/lib/harness/src/ /app/ui/lib/harness/src/
-RUN LLAMA_BUILD_NUMBER="$APP_VERSION" npm run build
+# Empty default seed; CI overrides with --build-context ccache_seed=docker-image://<ccache image> (or an empty dir on the first run)
+FROM scratch AS ccache_seed
 
 FROM docker.io/intel/deep-learning-essentials:$ONEAPI_VERSION AS build
 
@@ -35,7 +21,7 @@ ARG GGML_SYCL_F16=ON
 ARG LEVEL_ZERO_VERSION=1.34.0
 ARG LEVEL_ZERO_UBUNTU_VERSION=u24.04
 RUN apt-get update && \
-    apt-get install -y git libssl-dev wget ca-certificates && \
+    apt-get install -y git libssl-dev wget ca-certificates ccache && \
     cd /tmp && \
     wget -q "https://github.com/oneapi-src/level-zero/releases/download/v${LEVEL_ZERO_VERSION}/libze1_${LEVEL_ZERO_VERSION}%2B${LEVEL_ZERO_UBUNTU_VERSION}_amd64.deb" -O libze1.deb && \
     wget -q "https://github.com/oneapi-src/level-zero/releases/download/v${LEVEL_ZERO_VERSION}/libze-dev_${LEVEL_ZERO_VERSION}%2B${LEVEL_ZERO_UBUNTU_VERSION}_amd64.deb" -O libze-dev.deb && \
@@ -44,9 +30,10 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-COPY . .
+# Restore ccache state from build context (empty on first run)
+COPY --from=ccache_seed / /root/.ccache/
 
-COPY --from=web /app/ui/apps/chat/dist ui/apps/chat/dist
+COPY . .
 
 RUN if [ "${GGML_SYCL_F16}" = "ON" ]; then \
         echo "GGML_SYCL_F16 is set" \
@@ -54,8 +41,11 @@ RUN if [ "${GGML_SYCL_F16}" = "ON" ]; then \
         && export SYCL_PROGRAM_COMPILE_OPTIONS="-cl-fp32-correctly-rounded-divide-sqrt"; \
     fi && \
     echo "Building with dynamic libs" && \
-    cmake -B build -DGGML_NATIVE=OFF -DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DLLAMA_BUILD_TESTS=OFF ${OPT_SYCL_F16} && \
-    cmake --build build --config Release -j$((($(nproc)+1)/2))
+    cmake -B build -DGGML_NATIVE=OFF -DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DLLAMA_BUILD_TESTS=OFF ${OPT_SYCL_F16} \
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache && \
+    cmake --build build --config Release -j$((($(nproc)+1)/2)) && \
+    ccache -s
 
 RUN mkdir -p /app/lib && \
     find build -name "*.so*" -exec cp -P {} /app/lib \;
@@ -173,3 +163,7 @@ WORKDIR /app
 HEALTHCHECK CMD [ "curl", "-f", "http://localhost:8080/health" ]
 
 ENTRYPOINT [ "/app/llama-server" ]
+
+### ccache export - CI pushes /root/.ccache to GHCR as the next run's ccache seed image
+FROM scratch AS ccache-export
+COPY --from=build /root/.ccache /
