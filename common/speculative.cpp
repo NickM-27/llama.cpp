@@ -1242,7 +1242,9 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
 
                     predecessor = (int32_t) std::distance(scores,
                             std::max_element(scores, scores + selector_top_k));
-                    if (params.p_min > 0.0f) {
+                    // always keep the first token: the draft pass is already paid and verifying
+                    // one extra token costs far less than a draft-less step
+                    if (params.p_min > 0.0f && !result.empty()) {
                         // softmax(scores) at the argmax, i.e. 1 / sum(exp(s_k - s_max))
                         float sum = 0.0f;
                         for (int32_t k = 0; k < selector_top_k; ++k) {
