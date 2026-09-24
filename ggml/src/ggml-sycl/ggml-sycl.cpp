@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <float.h>
 #include <limits>
+#include <map>
 #include <optional>
 #include <stdint.h>
 #include <stdio.h>
@@ -6055,8 +6056,64 @@ static int ggml_sycl_try_gdn_cache_fusion(const ggml_cgraph * cgraph, int node_i
     return skip;
 }
 
+// DEBUG ONLY, not for upstream: GGML_SYCL_PROF=1 waits after every node and logs time per op
+struct ggml_sycl_prof_stats {
+    int64_t calls      = 0;
+    int64_t t_total_us = 0;
+    std::map<std::string, std::pair<int64_t, int64_t>> ops; // label -> (count, us)
+};
+
+static std::string ggml_sycl_prof_label(const ggml_tensor * node) {
+    std::string label = ggml_op_desc(node);
+    if ((node->op == GGML_OP_MUL_MAT || node->op == GGML_OP_MUL_MAT_ID || node->op == GGML_OP_GET_ROWS) && node->src[0]) {
+        label += std::string("(") + ggml_type_name(node->src[0]->type) + ")";
+    }
+    return label;
+}
+
+static void ggml_sycl_prof_report(const std::string & key, ggml_sycl_prof_stats & st) {
+    std::vector<std::pair<std::string, std::pair<int64_t, int64_t>>> ops(st.ops.begin(), st.ops.end());
+    std::sort(ops.begin(), ops.end(), [](const auto & a, const auto & b) { return a.second.second > b.second.second; });
+    GGML_LOG_INFO("[SYCL-PROF] %s: %.3f ms/graph over %lld graphs\n", key.c_str(),
+                  st.t_total_us / 1000.0 / st.calls, (long long) st.calls);
+    for (const auto & op : ops) {
+        GGML_LOG_INFO("[SYCL-PROF]   %-24s %7.1f nodes/graph %8.3f ms/graph\n", op.first.c_str(),
+                      (double) op.second.first / st.calls, op.second.second / 1000.0 / st.calls);
+    }
+    st = {};
+}
+
 static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * sycl_ctx, ggml_cgraph * cgraph) {
     ggml_sycl_set_main_device(sycl_ctx->device);
+
+    // waiting per node is not possible while a SYCL graph is being recorded
+    static const bool prof = ggml_sycl_get_env("GGML_SYCL_PROF", 0) != 0 && !g_ggml_sycl_enable_graph;
+    static std::map<std::string, ggml_sycl_prof_stats> prof_stats;
+    std::string            prof_key;
+    std::string            prof_cur;
+    int64_t                prof_t0    = 0;
+    int64_t                prof_start = 0;
+    ggml_sycl_prof_stats * prof_st    = nullptr;
+    if (prof) {
+        char key[96];
+        snprintf(key, sizeof(key), "ctx=%p nodes=%d", (void *) sycl_ctx, cgraph->n_nodes);
+        prof_key = key;
+        prof_st  = &prof_stats[prof_key];
+        sycl_ctx->stream()->wait();
+        prof_start = prof_t0 = ggml_time_us();
+    }
+    // close the timing span of the previous node and open one for the next node
+    auto prof_mark = [&](const ggml_tensor * next) {
+        sycl_ctx->stream()->wait();
+        const int64_t t = ggml_time_us();
+        if (!prof_cur.empty()) {
+            auto & op = prof_st->ops[prof_cur];
+            op.first++;
+            op.second += t - prof_t0;
+        }
+        prof_t0  = t;
+        prof_cur = next ? ggml_sycl_prof_label(next) : "";
+    };
 
     for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
@@ -6065,6 +6122,9 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
         }
         if ((node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
             continue;
+        }
+        if (prof) {
+            prof_mark(node);
         }
 
         const int nodes_to_skip = ggml_sycl_fuse(*sycl_ctx, cgraph, i);
@@ -6158,6 +6218,15 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
             GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
         }
         GGML_ASSERT(ok);
+    }
+
+    if (prof) {
+        prof_mark(nullptr);
+        prof_st->calls++;
+        prof_st->t_total_us += ggml_time_us() - prof_start;
+        if (prof_st->calls == 100) {
+            ggml_sycl_prof_report(prof_key, *prof_st);
+        }
     }
 }
 
