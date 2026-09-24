@@ -1932,8 +1932,17 @@ static void reorder_mul_mat_vec_q5_k_q8_1_sycl_ncols(
         const int ncols, const int nrows,
         const int stride_col_y_bytes, const int stride_col_dst,
         dpct::queue_ptr stream) {
-    constexpr int rows_per_sg = ncols_dst >= 3 ? 2 : 1;
-    reorder_mul_mat_vec_q5_k_q8_1_sycl_ncols_impl<ncols_dst, rows_per_sg>(vx, vy, dst, ncols, nrows, stride_col_y_bytes, stride_col_dst, stream);
+    if constexpr (ncols_dst >= 3) {
+        // TODO: DEBUG experiment knob (4 rows per subgroup), not for upstream
+        static const int rows = ggml_sycl_get_env("GGML_SYCL_Q5K_ROWS", 2);
+        if (rows == 4) {
+            reorder_mul_mat_vec_q5_k_q8_1_sycl_ncols_impl<ncols_dst, 4>(vx, vy, dst, ncols, nrows, stride_col_y_bytes, stride_col_dst, stream);
+        } else {
+            reorder_mul_mat_vec_q5_k_q8_1_sycl_ncols_impl<ncols_dst, 2>(vx, vy, dst, ncols, nrows, stride_col_y_bytes, stride_col_dst, stream);
+        }
+        return;
+    }
+    reorder_mul_mat_vec_q5_k_q8_1_sycl_ncols_impl<ncols_dst, 1>(vx, vy, dst, ncols, nrows, stride_col_y_bytes, stride_col_dst, stream);
 }
 
 static void reorder_mul_mat_vec_q5_k_q8_1_sycl_switch_ncols(
