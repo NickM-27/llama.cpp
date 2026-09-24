@@ -4936,6 +4936,11 @@ static bool ggml_sycl_mul_mat_glu_mmvq_fused(ggml_backend_sycl_context & ctx, gg
         return ggml_sycl_mul_mat_glu_mmvq_plain(ctx, glu, gate, up, wu, wg, act);
     }
 
+    // past 5 columns the fused q5_K kernel is slower than the two unfused GEMVs on the B70 (register pressure)
+    if (wu->type == GGML_TYPE_Q5_K && act->ne[1] > 5) {
+        return false;
+    }
+
     // install the reorder (SoA) layout the fused kernel needs, as the unfused mmvq path would;
     // a no-op once done. after the bail checks so a declined op does not pay for it.
     opt_for_reorder(&ctx, wu, act, up, mul_mat_algo::MMVQ);
