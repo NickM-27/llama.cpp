@@ -6057,28 +6057,40 @@ static int ggml_sycl_try_gdn_cache_fusion(const ggml_cgraph * cgraph, int node_i
 }
 
 // DEBUG ONLY, not for upstream: GGML_SYCL_PROF=1 waits after every node and logs time per op
+struct ggml_sycl_prof_op {
+    int64_t count = 0;
+    int64_t us    = 0;
+    int64_t bytes = 0; // weight bytes read, mat-muls only
+};
+
 struct ggml_sycl_prof_stats {
     int64_t calls      = 0;
     int64_t t_total_us = 0;
-    std::map<std::string, std::pair<int64_t, int64_t>> ops; // label -> (count, us)
+    std::map<std::string, ggml_sycl_prof_op> ops;
 };
 
 static std::string ggml_sycl_prof_label(const ggml_tensor * node) {
     std::string label = ggml_op_desc(node);
-    if ((node->op == GGML_OP_MUL_MAT || node->op == GGML_OP_MUL_MAT_ID || node->op == GGML_OP_GET_ROWS) && node->src[0]) {
+    if (node->op == GGML_OP_MUL_MAT && node->src[0] && node->src[1]) {
+        char buf[96];
+        snprintf(buf, sizeof(buf), "(%s k=%lld rows=%lld n=%lld)", ggml_type_name(node->src[0]->type),
+                 (long long) node->src[0]->ne[0], (long long) node->src[0]->ne[1], (long long) node->src[1]->ne[1]);
+        label += buf;
+    } else if ((node->op == GGML_OP_MUL_MAT_ID || node->op == GGML_OP_GET_ROWS) && node->src[0]) {
         label += std::string("(") + ggml_type_name(node->src[0]->type) + ")";
     }
     return label;
 }
 
 static void ggml_sycl_prof_report(const std::string & key, ggml_sycl_prof_stats & st) {
-    std::vector<std::pair<std::string, std::pair<int64_t, int64_t>>> ops(st.ops.begin(), st.ops.end());
-    std::sort(ops.begin(), ops.end(), [](const auto & a, const auto & b) { return a.second.second > b.second.second; });
+    std::vector<std::pair<std::string, ggml_sycl_prof_op>> ops(st.ops.begin(), st.ops.end());
+    std::sort(ops.begin(), ops.end(), [](const auto & a, const auto & b) { return a.second.us > b.second.us; });
     GGML_LOG_INFO("[SYCL-PROF] %s: %.3f ms/graph over %lld graphs\n", key.c_str(),
                   st.t_total_us / 1000.0 / st.calls, (long long) st.calls);
     for (const auto & op : ops) {
-        GGML_LOG_INFO("[SYCL-PROF]   %-24s %7.1f nodes/graph %8.3f ms/graph\n", op.first.c_str(),
-                      (double) op.second.first / st.calls, op.second.second / 1000.0 / st.calls);
+        const double gbps = op.second.bytes > 0 ? (double) op.second.bytes / op.second.us / 1000.0 : 0.0;
+        GGML_LOG_INFO("[SYCL-PROF]   %-48s %7.1f nodes/graph %8.3f ms/graph %7.1f GB/s\n", op.first.c_str(),
+                      (double) op.second.count / st.calls, op.second.us / 1000.0 / st.calls, gbps);
     }
     st = {};
 }
@@ -6091,6 +6103,7 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
     static std::map<std::string, ggml_sycl_prof_stats> prof_stats;
     std::string            prof_key;
     std::string            prof_cur;
+    int64_t                prof_bytes = 0;
     int64_t                prof_t0    = 0;
     int64_t                prof_start = 0;
     ggml_sycl_prof_stats * prof_st    = nullptr;
@@ -6108,11 +6121,13 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
         const int64_t t = ggml_time_us();
         if (!prof_cur.empty()) {
             auto & op = prof_st->ops[prof_cur];
-            op.first++;
-            op.second += t - prof_t0;
+            op.count++;
+            op.us    += t - prof_t0;
+            op.bytes += prof_bytes;
         }
-        prof_t0  = t;
-        prof_cur = next ? ggml_sycl_prof_label(next) : "";
+        prof_t0    = t;
+        prof_cur   = next ? ggml_sycl_prof_label(next) : "";
+        prof_bytes = next && next->op == GGML_OP_MUL_MAT && next->src[0] ? (int64_t) ggml_nbytes(next->src[0]) : 0;
     };
 
     for (int i = 0; i < cgraph->n_nodes; i++) {
