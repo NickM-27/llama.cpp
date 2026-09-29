@@ -56,6 +56,9 @@ export const SETTINGS_SECTION_TITLES = {
 	TOOLS: SETTINGS_SECTIONS.TOOLS.title
 } as const;
 
+/** Transcription model setting value that auto-picks the first loaded audio model. */
+export const TRANSCRIPTION_MODEL_AUTO = 'auto';
+
 export const SETTINGS_REGISTRY: SettingsSectionEntry[] = [
 	// General
 	{
@@ -112,10 +115,23 @@ export const SETTINGS_REGISTRY: SettingsSectionEntry[] = [
 			},
 			{
 				defaultValue: true,
-				help: 'Automatically show microphone button instead of send button when textarea is empty for models with audio modality support.',
+				help: 'Automatically show microphone button instead of send button when textarea is empty and a model with audio modality is available.',
 				key: SETTINGS_KEYS.AUTO_MIC_ON_EMPTY,
 				label: 'Show microphone on empty input',
 				type: SettingsFieldType.CHECKBOX
+			},
+			{
+				defaultValue: TRANSCRIPTION_MODEL_AUTO,
+				dependsOn: SETTINGS_KEYS.AUTO_MIC_ON_EMPTY,
+				emptyOption: {
+					label: 'Auto (first loaded audio model)',
+					value: TRANSCRIPTION_MODEL_AUTO
+				},
+				help: 'Model used to transcribe mic input when the current model does not support audio input.',
+				key: SETTINGS_KEYS.TRANSCRIPTION_MODEL,
+				label: 'Transcription model',
+				modelFilter: (model) => model.modalities?.audio ?? false,
+				type: SettingsFieldType.MODEL_SELECT
 			},
 			{
 				defaultValue: false,
@@ -152,6 +168,18 @@ export const SETTINGS_REGISTRY: SettingsSectionEntry[] = [
 				key: SETTINGS_KEYS.TITLE_GENERATION_PROMPT,
 				label: 'LLM title generation prompt',
 				type: SettingsFieldType.TEXTAREA
+			},
+			{
+				defaultValue: TITLE_GENERATION.MODEL_AUTO,
+				dependsOn: SETTINGS_KEYS.TITLE_GENERATION_USE_LLM,
+				emptyOption: {
+					label: 'Auto (model of the conversation)',
+					value: TITLE_GENERATION.MODEL_AUTO
+				},
+				help: 'Model that writes the title. Pick a smaller one to keep the chat model free. Router mode only.',
+				key: SETTINGS_KEYS.TITLE_GENERATION_MODEL,
+				label: 'LLM title generation model',
+				type: SettingsFieldType.MODEL_SELECT
 			},
 			{
 				defaultValue: false,
@@ -665,6 +693,7 @@ function toSettingsSection(section: SettingsSectionEntry): SettingsSection {
 			.filter((s) => s.standaloneField !== false)
 			.map((s) => ({
 				dependsOn: s.dependsOn,
+				emptyOption: s.emptyOption,
 				help: s.help,
 				isExperimental: s.isExperimental,
 				isPositiveInteger: s.isPositiveInteger,
@@ -673,6 +702,7 @@ function toSettingsSection(section: SettingsSectionEntry): SettingsSection {
 				label: s.label,
 				max: s.max,
 				min: s.min,
+				modelFilter: s.modelFilter,
 				options: s.options as SettingsFieldConfig['options'],
 				placeholder: s.placeholder,
 				radioOptions: s.radioOptions,
