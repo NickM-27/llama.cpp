@@ -1,4 +1,8 @@
-import { REASONING_EFFORT_LEVELS, REASONING_EFFORT_TOKENS } from '$lib/constants';
+import {
+	REASONING_EFFORT_LABELS,
+	REASONING_EFFORT_LEVELS,
+	REASONING_EFFORT_TOKENS
+} from '$lib/constants';
 import { ReasoningEffort } from '$lib/enums';
 import { conversationsStore, modelsStore, serverStore } from '$lib/stores';
 import type { ReasoningEffortLevel } from '$lib/types';
@@ -56,6 +60,29 @@ export function useReasoningMenu(): UseReasoningMenuReturn {
 
 		return modelsStore.props.supportsThinking || modelSupportsThinkingFromMessages;
 	});
+	// effort levels from the chat template, empty means fall back to token budgets
+	const templateEfforts = $derived.by(() => {
+		void modelsStore.props.cacheVersion;
+
+		const modelId = serverStore.isRouterMode
+			? modelsStore.selectedModelName || conversationModel
+			: null;
+
+		return modelsStore.props.getModelReasoningEfforts(modelId ?? '');
+	});
+	const levels = $derived.by((): ReasoningEffortLevel[] => {
+		if (templateEfforts.length === 0) return REASONING_EFFORT_LEVELS;
+
+		return [
+			{ label: REASONING_EFFORT_LABELS[ReasoningEffort.DEFAULT], value: ReasoningEffort.DEFAULT },
+			{ label: REASONING_EFFORT_LABELS[ReasoningEffort.OFF], value: ReasoningEffort.OFF },
+			...templateEfforts.map((value) => ({
+				hasInfo: value === ReasoningEffort.MAX,
+				label: REASONING_EFFORT_LABELS[value] ?? value,
+				value
+			}))
+		];
+	});
 	const currentEffort = $derived(conversationsStore.preferences.getReasoningEffort());
 	const thinkingEnabled = $derived(
 		currentEffort !== ReasoningEffort.OFF && currentEffort !== ReasoningEffort.DEFAULT
@@ -81,7 +108,7 @@ export function useReasoningMenu(): UseReasoningMenuReturn {
 			return currentEffort === level.value;
 		},
 		get levels() {
-			return REASONING_EFFORT_LEVELS;
+			return levels;
 		},
 		get modelSupportsThinking() {
 			return modelSupportsThinking;
@@ -94,6 +121,8 @@ export function useReasoningMenu(): UseReasoningMenuReturn {
 		},
 		tokenLabel(level: ReasoningEffortLevel): string | null {
 			if (level.value === ReasoningEffort.DEFAULT) return 'Model default';
+
+			if (templateEfforts.length > 0) return null;
 
 			const tokens = REASONING_EFFORT_TOKENS[level.value];
 

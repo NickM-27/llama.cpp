@@ -906,6 +906,7 @@ By default, it is read-only. To make POST request to change global properties, y
   "model_path": "../models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
   "chat_template": "...",
   "chat_template_caps": {},
+  "chat_template_reasoning_efforts": [],
   "modalities": {
     "vision": false
   },
@@ -920,6 +921,7 @@ By default, it is read-only. To make POST request to change global properties, y
 - `model_path` - the path to model file (same with `-m` argument)
 - `chat_template` - the model's original Jinja2 prompt template
 - `chat_template_caps` - capabilities of the chat template (see `common/jinja/caps.h` for more info)
+- `chat_template_reasoning_efforts` - `reasoning_effort` levels that change the rendered prompt, e.g. `["low", "medium", "high"]`; empty if the template has no effort levels
 - `modalities` - the list of supported modalities
 - `is_sleeping` - sleeping status, see [Sleeping on idle](#sleeping-on-idle)
 

@@ -11,7 +11,9 @@ export const REASONING_EFFORT_LABELS: Record<string, string> = {
 	[ReasoningEffort.LOW]: 'Low',
 	[ReasoningEffort.MAX]: 'Max',
 	[ReasoningEffort.MEDIUM]: 'Medium',
-	[ReasoningEffort.OFF]: 'Off'
+	[ReasoningEffort.MINIMAL]: 'Minimal',
+	[ReasoningEffort.OFF]: 'Off',
+	[ReasoningEffort.XHIGH]: 'Extra High'
 };
 
 export const REASONING_EFFORT_LEVELS: ReasoningEffortLevel[] = [

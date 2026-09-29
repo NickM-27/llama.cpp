@@ -227,6 +227,24 @@ export class ModelPropsManager {
 		return this.cache.get(modelId);
 	}
 
+	/**
+	 * Reasoning effort levels the model's chat template supports, empty if it has none.
+	 * In ROUTER mode, fetches model props if not cached.
+	 */
+	getModelReasoningEfforts(modelId: string): string[] {
+		if (!serverStore.isRouterMode) {
+			return serverStore.props?.chat_template_reasoning_efforts ?? [];
+		}
+
+		if (!modelId) return [];
+
+		if (!this.cache.get(modelId)) {
+			this.fetchModelProps(modelId);
+		}
+
+		return this.getModelProps(modelId)?.chat_template_reasoning_efforts ?? [];
+	}
+
 	isModelPropsFetching(modelId: string): boolean {
 		return this.fetching.has(modelId);
 	}

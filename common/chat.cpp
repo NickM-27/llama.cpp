@@ -1531,3 +1531,12 @@ std::map<std::string, bool> common_chat_templates_get_caps(const common_chat_tem
     }
     return chat_templates->template_default->caps.to_map();
 }
+
+std::vector<std::string> common_chat_templates_get_reasoning_efforts(const common_chat_templates * chat_templates) {
+    GGML_ASSERT(chat_templates != nullptr);
+    GGML_ASSERT(chat_templates->template_default != nullptr);
+    if (chat_templates->template_tool_use != nullptr) {
+        return chat_templates->template_tool_use->caps.reasoning_efforts;
+    }
+    return chat_templates->template_default->caps.reasoning_efforts;
+}

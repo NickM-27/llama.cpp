@@ -4183,6 +4183,7 @@ server_context_meta server_context::get_meta() const {
 
         /* chat_params            */ impl->chat_params,
         /* chat_template_caps     */ common_chat_templates_get_caps(impl->chat_params.tmpls.get()),
+        /* chat_template_reasoning_efforts */ common_chat_templates_get_reasoning_efforts(impl->chat_params.tmpls.get()),
 
         /* bos_token_str          */ bos_token_str,
         /* eos_token_str          */ eos_token_str,
@@ -4609,6 +4610,7 @@ static json get_res_props(const server_context_meta & meta, const common_params 
         { "ui_settings",                 meta.json_ui_settings },
         { "chat_template",               tmpl_default },
         { "chat_template_caps",          meta.chat_template_caps },
+        { "chat_template_reasoning_efforts", meta.chat_template_reasoning_efforts },
         { "bos_token",                   meta.bos_token_str },
         { "eos_token",                   meta.eos_token_str },
         { "build_info",                  meta.build_info },

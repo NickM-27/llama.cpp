@@ -256,6 +256,8 @@ export interface ApiLlamaCppServerProps {
 		video: boolean;
 	};
 	chat_template: string;
+	/** reasoning_effort levels the chat template supports, empty if it has none */
+	chat_template_reasoning_efforts?: string[];
 	bos_token: string;
 	eos_token: string;
 	build_info: string;
@@ -280,6 +282,7 @@ export interface ApiChatCompletionRequest {
 	tools?: ApiChatCompletionTool[];
 	// Reasoning parameters
 	reasoning_format?: string;
+	reasoning_effort?: string;
 	// Generation parameters
 	temperature?: number;
 	max_tokens?: number;

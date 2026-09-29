@@ -104,6 +104,11 @@ std::string caps::to_string() const {
     for (const auto & [key, value] : to_map()) {
         ss << "  " << key << "=" << (value ? "true" : "false") << "\n";
     }
+    ss << "  reasoning_efforts=";
+    for (const auto & effort : reasoning_efforts) {
+        ss << effort << " ";
+    }
+    ss << "\n";
     ss << ")";
     return ss.str();
 }
@@ -564,6 +569,50 @@ caps caps_get(jinja::program & prog) {
             result.supports_reasoning_effort = effort->stats.used;
         }
     );
+
+    if (result.supports_reasoning_effort) {
+        JJ_DEBUG("%s\n", ">>> Running capability check: reasoning effort levels");
+
+        // render with the effort set to a given level, empty output means the render failed
+        const auto render_effort = [&](const std::string & effort) {
+            std::string rendered;
+            caps_try_execute(
+                prog,
+                [&]() {
+                    return json::array({
+                        {
+                            {"role", "user"},
+                            {"content", "User message"}
+                        },
+                    });
+                },
+                [&](context & ctx) {
+                    ctx.set_val("enable_thinking", mk_val<value_bool>(true));
+                    caps_apply_reasoning_effort(ctx, effort);
+                },
+                nullptr, // tools_fn
+                [&](context &, bool success, value &, value &, const std::string & output) {
+                    rendered = success ? output : "";
+                }
+            );
+            return rendered;
+        };
+
+        // a level is supported if it renders a different prompt than an unknown level
+        static const std::vector<std::string> candidates = {"minimal", "low", "medium", "high", "xhigh", "max"};
+        const std::string unknown = render_effort("__unknown_effort__");
+        for (const auto & effort : candidates) {
+            std::string rendered = render_effort(effort);
+            if (!rendered.empty() && rendered != unknown) {
+                result.reasoning_efforts.push_back(effort);
+            }
+        }
+
+        // template prints the value as-is, so any level renders differently; use the common OpenAI levels
+        if (!unknown.empty() && result.reasoning_efforts.size() == candidates.size()) {
+            result.reasoning_efforts = {"low", "medium", "high"};
+        }
+    }
 
     JJ_DEBUG("%s\n", result.to_string().c_str());
 

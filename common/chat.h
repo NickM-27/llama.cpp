@@ -366,6 +366,9 @@ common_json common_chat_tool_parameters(const common_json & function);
 // get template caps, useful for reporting to server /props endpoint
 std::map<std::string, bool> common_chat_templates_get_caps(const common_chat_templates * chat_templates);
 
+// get the reasoning effort levels supported by the template, empty if none
+std::vector<std::string> common_chat_templates_get_reasoning_efforts(const common_chat_templates * chat_templates);
+
 std::string common_chat_template_direct_apply(
     const common_chat_template & tmpl,
     const autoparser::generation_params & inputs);
