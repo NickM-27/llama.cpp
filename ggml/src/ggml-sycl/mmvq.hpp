@@ -28,6 +28,12 @@ inline bool ggml_sycl_q4_k_mmvq_wide_row_pair(int device) {
     return arch == gpu_arch::intel_gpu_bmg_g21 || arch == gpu_arch::intel_gpu_bmg_g31;
 }
 
+// q8_0 multi-column MMVQ shares weights across columns on Xe2 (BMG); untested archs keep the per-column kernel
+inline bool ggml_sycl_q8_0_mmvq_reuse(int device) {
+    const gpu_arch arch = ggml_sycl_info().devices[device].hw_info.arch;
+    return arch == gpu_arch::intel_gpu_bmg_g21 || arch == gpu_arch::intel_gpu_bmg_g31;
+}
+
 void ggml_sycl_op_mul_mat_vec_q(
     ggml_backend_sycl_context & ctx,
     const ggml_tensor *src0, const ggml_tensor *src1, ggml_tensor *dst,
